@@ -50,11 +50,6 @@ export let exposedShopClient: SimpleGraphQLClient;
 (async () => {
     require('dotenv').config();
 
-    // const customOrderProcess = configureDefaultOrderProcess({
-    //     arrangingPaymentRequiresShipping: false,
-    //     arrangingPaymentRequiresCustomer: false,
-    // });
-
     registerInitializer('sqljs', new SqljsInitializer(path.join(__dirname, '__data__')));
     const config = mergeConfig(testConfig, {
         authOptions: {
@@ -63,9 +58,6 @@ export let exposedShopClient: SimpleGraphQLClient;
                 secret: 'cookie-secret',
             },
         },
-        // orderOptions: {
-        //     process: [customOrderProcess as any],
-        // },
         plugins: [
             ...testConfig.plugins,
             AdminUiPlugin.init({
