@@ -52,6 +52,7 @@ import { Cancellation } from '../../../entity/stock-movement/cancellation.entity
 import { Release } from '../../../entity/stock-movement/release.entity';
 import { Sale } from '../../../entity/stock-movement/sale.entity';
 import { Surcharge } from '../../../entity/surcharge/surcharge.entity';
+import { OrderEvent } from '../../../event-bus';
 import { EventBus } from '../../../event-bus/event-bus';
 import { OrderLineEvent } from '../../../event-bus/events/order-line-event';
 import { CountryService } from '../../services/country.service';
@@ -66,7 +67,6 @@ import { ShippingCalculator } from '../shipping-calculator/shipping-calculator';
 import { TranslatorService } from '../translator/translator.service';
 import { getOrdersFromLines, orderLinesAreAllCancelled } from '../utils/order-utils';
 import { patchEntity } from '../utils/patch-entity';
-import { OrderEvent } from '../../../event-bus';
 
 /**
  * @description
@@ -633,9 +633,13 @@ export class OrderModifier {
             orderLine.listPrice = priceResult.price;
             orderLine.listPriceIncludesTax = priceResult.priceIncludesTax;
         }
-
+        // Ensure order.promotions is populated, so it isn't lost when frozen
+        if (input.options?.freezePromotions) {
+            order.promotions = activePromotionsPre;
+        }
         await this.orderCalculator.applyPriceAdjustments(ctx, order, promotions, updatedOrderLines, {
             recalculateShipping: input.options?.recalculateShipping,
+            freezePromotions: input.options?.freezePromotions,
         });
         await this.connection.getRepository(ctx, OrderLine).save(order.lines, { reload: false });
         const orderCustomFields = (input as any).customFields;

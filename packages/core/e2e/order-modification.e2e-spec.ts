@@ -2620,6 +2620,229 @@ describe('Order modification', () => {
         });
     });
 
+    describe('freezePromotions option', () => {
+        const UPDATE_PROMOTION = gql`
+            mutation UpdatePromotion($input: UpdatePromotionInput!) {
+                updatePromotion(input: $input) {
+                    ... on Promotion {
+                        id
+                        endsAt
+                    }
+                }
+            }
+        `;
+
+        async function createOrderWithExpiredPromotion() {
+            const code = `EXPIRED_${Math.random().toString(36).substring(7)}`;
+            const { createPromotion } = await adminClient.query<
+                Codegen.CreatePromotionMutation,
+                Codegen.CreatePromotionMutationVariables
+            >(CREATE_PROMOTION, {
+                input: {
+                    couponCode: code,
+                    enabled: true,
+                    conditions: [],
+                    actions: [
+                        {
+                            code: orderFixedDiscount.code,
+                            arguments: [{ name: 'discount', value: '500' }],
+                        },
+                    ],
+                    translations: [{ languageCode: LanguageCode.en, name: 'Expired Promo' }],
+                },
+            });
+
+            await shopClient.asUserWithCredentials('hayden.zieme12@hotmail.com', 'test');
+            await shopClient.query(gql(ADD_ITEM_TO_ORDER_WITH_CUSTOM_FIELDS), {
+                productVariantId: 'T_1',
+                quantity: 1,
+            } as any);
+            await shopClient.query<
+                CodegenShop.ApplyCouponCodeMutation,
+                CodegenShop.ApplyCouponCodeMutationVariables
+            >(APPLY_COUPON_CODE, {
+                couponCode: code,
+            });
+
+            await proceedToArrangingPayment(shopClient);
+            const order = await addPaymentToOrder(shopClient, testSuccessfulPaymentMethod);
+            orderGuard.assertSuccess(order);
+
+            await adminTransitionOrderToState(order.id, 'Modifying');
+
+            // Expire the promotion
+            await adminClient.query(UPDATE_PROMOTION, {
+                input: {
+                    id: (createPromotion as any).id,
+                    endsAt: new Date(Date.now() - 10000).toISOString(),
+                },
+            });
+
+            return { order, promotionId: (createPromotion as any).id };
+        }
+
+        it('dry run: recalculatePromotions: true (default) removes expired promotion', async () => {
+            const { order } = await createOrderWithExpiredPromotion();
+            const { modifyOrder } = await adminClient.query<
+                Codegen.ModifyOrderMutation,
+                Codegen.ModifyOrderMutationVariables
+            >(MODIFY_ORDER, {
+                input: {
+                    dryRun: true,
+                    orderId: order.id,
+                    addItems: [{ productVariantId: 'T_2', quantity: 1 }],
+                },
+            });
+
+            orderGuard.assertSuccess(modifyOrder);
+
+            expect(modifyOrder.discounts.length).toBe(0);
+        });
+
+        it('dry run: freezePromotions: true keeps expired promotion', async () => {
+            const { order } = await createOrderWithExpiredPromotion();
+            const { modifyOrder } = await adminClient.query<
+                Codegen.ModifyOrderMutation,
+                Codegen.ModifyOrderMutationVariables
+            >(MODIFY_ORDER, {
+                input: {
+                    dryRun: true,
+                    orderId: order.id,
+                    addItems: [{ productVariantId: 'T_2', quantity: 1 }],
+                    options: {
+                        freezePromotions: true,
+                    },
+                },
+            });
+
+            orderGuard.assertSuccess(modifyOrder);
+
+            expect(modifyOrder.discounts.length).toBe(1);
+        });
+
+        it('wet run: recalculatePromotions: true (default) removes expired promotion', async () => {
+            const { order } = await createOrderWithExpiredPromotion();
+            const { modifyOrder } = await adminClient.query<
+                Codegen.ModifyOrderMutation,
+                Codegen.ModifyOrderMutationVariables
+            >(MODIFY_ORDER, {
+                input: {
+                    dryRun: false,
+                    orderId: order.id,
+                    addItems: [{ productVariantId: 'T_2', quantity: 1 }],
+                },
+            });
+            orderGuard.assertSuccess(modifyOrder);
+
+            expect(modifyOrder.discounts.length).toBe(0);
+        });
+
+        it('wet run: freezePromotions: true keeps expired promotion', async () => {
+            const { order } = await createOrderWithExpiredPromotion();
+            const { modifyOrder } = await adminClient.query<
+                Codegen.ModifyOrderMutation,
+                Codegen.ModifyOrderMutationVariables
+            >(MODIFY_ORDER, {
+                input: {
+                    dryRun: false,
+                    orderId: order.id,
+                    addItems: [{ productVariantId: 'T_2', quantity: 1 }],
+                    options: {
+                        freezePromotions: true,
+                    },
+                },
+            });
+            orderGuard.assertSuccess(modifyOrder);
+
+            expect(modifyOrder.discounts.length).toBe(1);
+        });
+
+        it('wet run: freezePromotions: true ignores new eligible promotion', async () => {
+            const code = `NEW_PROMO_${Math.random().toString(36).substring(7)}`;
+            await adminClient.query<
+                Codegen.CreatePromotionMutation,
+                Codegen.CreatePromotionMutationVariables
+            >(CREATE_PROMOTION, {
+                input: {
+                    couponCode: code,
+                    enabled: true,
+                    conditions: [
+                        {
+                            code: minimumOrderAmount.code,
+                            arguments: [{ name: 'amount', value: '200000' }], // $2000
+                        },
+                    ],
+                    actions: [
+                        {
+                            code: orderFixedDiscount.code,
+                            arguments: [{ name: 'discount', value: '1000' }], // $10
+                        },
+                    ],
+                    translations: [{ languageCode: LanguageCode.en, name: 'Spend 2000 get 10' }],
+                },
+            });
+
+            await shopClient.asUserWithCredentials('hayden.zieme12@hotmail.com', 'test');
+            await shopClient.query(gql(ADD_ITEM_TO_ORDER_WITH_CUSTOM_FIELDS), {
+                productVariantId: 'T_1',
+                quantity: 1,
+            } as any);
+
+            await shopClient.query<
+                CodegenShop.ApplyCouponCodeMutation,
+                CodegenShop.ApplyCouponCodeMutationVariables
+            >(APPLY_COUPON_CODE, {
+                couponCode: code,
+            });
+
+            await proceedToArrangingPayment(shopClient);
+            const order = await addPaymentToOrder(shopClient, testSuccessfulPaymentMethod);
+
+            // Ensure we are below threshold
+            expect(order.totalWithTax).toBeLessThan(200000);
+            expect(order.discounts.length).toBe(0);
+
+            await adminTransitionOrderToState(order.id, 'Modifying');
+
+            // Add items to exceed $2000 with freezePromotions: true
+            const { modifyOrder } = await adminClient.query<
+                Codegen.ModifyOrderMutation,
+                Codegen.ModifyOrderMutationVariables
+            >(MODIFY_ORDER, {
+                input: {
+                    dryRun: false,
+                    orderId: order.id,
+                    addItems: [{ productVariantId: 'T_1', quantity: 1 }],
+                    options: {
+                        freezePromotions: true,
+                    },
+                },
+            });
+            orderGuard.assertSuccess(modifyOrder);
+
+            // Should NOT have the discount because we froze promotions
+            expect(modifyOrder.totalWithTax).toBeGreaterThan(200000);
+            expect(modifyOrder.discounts.length).toBe(0);
+
+            // Verify that without freeze it WOULD apply
+            const { modifyOrder: modifyOrder2 } = await adminClient.query<
+                Codegen.ModifyOrderMutation,
+                Codegen.ModifyOrderMutationVariables
+            >(MODIFY_ORDER, {
+                input: {
+                    dryRun: false,
+                    orderId: order.id,
+                    addItems: [{ productVariantId: 'T_1', quantity: 1 }], // Add 1 more to trigger recalc
+                    options: {
+                        freezePromotions: false,
+                    },
+                },
+            });
+            orderGuard.assertSuccess(modifyOrder2);
+            expect(modifyOrder2.discounts.length).toBe(1);
+        });
+    });
+
     async function adminTransitionOrderToState(id: string, state: string) {
         const result = await adminClient.query<
             Codegen.AdminTransitionMutation,

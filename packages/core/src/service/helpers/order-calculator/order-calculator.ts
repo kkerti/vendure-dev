@@ -55,12 +55,15 @@ export class OrderCalculator {
         order: Order,
         promotions: Promotion[],
         updatedOrderLines: OrderLine[] = [],
-        options?: { recalculateShipping?: boolean },
+        options?: { recalculateShipping?: boolean; freezePromotions?: boolean },
     ): Promise<Order> {
         const { taxZoneStrategy } = this.configService.taxOptions;
         // We reset the promotions array as all promotions
         // must be revalidated on any changes to an Order.
-        order.promotions = [];
+        // Only reset promotions if we are NOT freezing them
+        if (!options?.freezePromotions) {
+            order.promotions = [];
+        }
         const zones = await this.zoneService.getAllWithMembers(ctx);
         const activeTaxZone = await this.requestContextCache.get(ctx, CacheKey.ActiveTaxZone, () =>
             taxZoneStrategy.determineTaxZone(ctx, zones, ctx.channel, order),
@@ -91,7 +94,9 @@ export class OrderCalculator {
 
             // Then test and apply promotions
             const totalBeforePromotions = order.subTotal;
-            await this.applyPromotions(ctx, order, promotions);
+            if (options?.freezePromotions !== true) {
+                await this.applyPromotions(ctx, order, promotions);
+            }
 
             if (order.subTotal !== totalBeforePromotions) {
                 // Finally, re-calculate taxes because the promotions may have
@@ -101,7 +106,9 @@ export class OrderCalculator {
         }
         if (options?.recalculateShipping !== false) {
             await this.applyShipping(ctx, order);
-            await this.applyShippingPromotions(ctx, order, promotions);
+            if (options?.freezePromotions !== true) {
+                await this.applyShippingPromotions(ctx, order, promotions);
+            }
         }
         this.calculateOrderTotals(order);
         return order;
